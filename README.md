@@ -29,31 +29,31 @@ Server ──── UDP ───► Client  (push notifications)
 
 ```
 src/main/java/
-├── client/                     # CLI client & network listeners
+├── client/                       # CLI client & network listeners
 │   ├── Client.java
 │   ├── CommandLineParser.java
 │   ├── ServerConnection.java
 │   └── UdpListener.java
-├── common/                     # Shared protocol, exceptions & serializers
+├── common/                       # Shared protocol, exceptions & serializers
 │   ├── exception/
-│   ├── protocol/ (Request/Response)
+│   ├── protocol/                 # Request / Response
 │   ├── GsonFactory.java
 │   └── InstantTypeAdapter.java
-├── model/                      # Domain entities & Enums
+├── model/                        # Domain entities & enums
 │   ├── Board.java
 │   ├── Task.java
 │   ├── User.java
 │   ├── Priority.java
 │   └── Status.java
-└── server/                     # Multi-threaded backend core
-├── command/ (Command Pattern implementations)
-├── repository/ (BoardRepository, UserRepository)
-├── service/ (AuthService, BoardAccessService, NotificationService)
-├── ClientHandler.java
-├── ClientSession.java
-├── CommandRegistryFactory.java
-├── Server.java
-└── Storage.java
+└── server/                       # Multi-threaded backend core
+    ├── command/                  # Command Pattern implementations
+    ├── repository/                # BoardRepository, UserRepository
+    ├── service/                   # AuthService, BoardAccessService, NotificationService
+    ├── ClientHandler.java
+    ├── ClientSession.java
+    ├── CommandRegistryFactory.java
+    ├── Server.java
+    └── Storage.java
 ```
 
 ---
@@ -87,9 +87,10 @@ java -cp target/TodoApp-1.0-SNAPSHOT.jar server.Server
 java -cp target/TodoApp-1.0-SNAPSHOT.jar client.Client
 ```
 
-> ⚠️ Always start the **server before the client**.
+> ⚠️ Always start the **server before the client**.You can start multiple clients — each binds its own ephemeral UDP port, so they won't conflict.
 
 ---
+
 
 ## 🧪 Quick Test Scenario
 
@@ -115,6 +116,14 @@ logout
 - **UDP Sockets** — Push notifications
 
 ---
+
+📌 Known Limitations
+Documented trade-offs, kept deliberately out of scope for the current version:
+- `Storage.save()` rewrites the entire JSON file on every change — fine at this scale, would need incremental/batched writes at production scale.
+- No rate limiting on UDP push notifications — a very large board could, in principle, be used to flood its members with packets.
+- Board membership management (`add_user_to_board`) is currently allowed for any board member, not just the owner.
+---
+
 
 ## 📄 License
 

@@ -1,52 +1,59 @@
-# 📝 TodoApp — Multi-User Task Manager
+# 📝 TodoApp — Multi-User Networked Task Manager
 
-A **Client-Server Todo application** built in Java, featuring real-time push notifications, secure authentication, and persistent storage. Designed with clean architecture and multi-threaded server handling.
-
+A high-performance **Client-Server Todo application** built in Java, featuring thread-safe architecture, dynamic UDP push notifications, BCrypt authentication, and crash-resilient storage. Refactored around **Clean Architecture**, **Command Pattern**, and **Network Reliability**.
 ---
 
 ## 🚀 Features
 
-- ✅ User registration & login with **SHA-256** password hashing
-- 📋 Create and manage **boards** (workspaces)
-- ➕ Add tasks with **title**, **description**, **priority**, and **status**
-- 👥 Invite other users to boards
-- 🔔 Real-time **UDP push notifications** on task updates
-- 💾 Persistent **JSON-based storage** — no database setup required
-- ⚡ Multi-threaded server with thread pool
-
+- 🔐 **BCrypt Security & Side-Channel Defense:** Uses salted BCrypt hashing with a dummy-hash mechanism to prevent timing side-channel attacks during authentication.
+- ⚡ **Dynamic UDP Push Notifications:** Clients bind to ephemeral ports automatically, allowing multiple clients to run on the same host without port conflicts.
+- 🛡️ **Atomic File Persistence:** Data is written atomically via temporary files (`StandardCopyOption.ATOMIC_MOVE`) to prevent JSON corruption during system crashes.
+- 🧩 **Clean Architecture & Design Patterns:** Decoupled into `Command`, `Repository`, `Service`, and `Model` layers with a `CommandRegistryFactory` composition root.
+- ⚡ **O(1) Memory Indexing:** `BoardRepository` uses secondary indexing (`ConcurrentHashMap`) for O(1) task lookups across boards.
+- 🔄 **Thread Safety & Resource Limits:** Utilizes `ConcurrentHashMap`, `CopyOnWriteArrayList`, dynamic socket idle timeouts (5 mins), and a graceful shutdown hook.
+- 💬 **Robust JSON Protocol:** Replaced brittle pipe-delimited commands with a structured, line-delimited JSON protocol using custom `Instant` type adapters.
 ---
 
 ## 🏗️ Architecture
 
 ```
-Client ──── TCP (port 8080) ────► Server
-Server ──── UDP (port 12345) ───► Client  (push notifications)
+Client ──── TCP ────► Server
+Server ──── UDP ───► Client  (push notifications)
 ```
 
-- Each client is handled in a **separate thread** (thread pool of 10)
-- Business logic is separated into `DatabaseManager`
-- Storage is handled by a dedicated `Storage` class using **Gson**
-
+- **Persistence Layer:** Dual `ConcurrentHashMap` caches backed by atomic JSON storage.
+- **Network Layer:** Socket timeout handling (5 min limit), centralized error responses, and clean exception mapping.
 ---
 
 ## 📁 Project Structure
 
 ```
 src/main/java/
-├── client/
-│   ├── Client.java              # Main client entry point (CLI)
-│   └── UdpListener.java         # Listens for UDP push notifications
-├── model/
-│   ├── User.java
+├── client/                     # CLI client & network listeners
+│   ├── Client.java
+│   ├── CommandLineParser.java
+│   ├── ServerConnection.java
+│   └── UdpListener.java
+├── common/                     # Shared protocol, exceptions & serializers
+│   ├── exception/
+│   ├── protocol/ (Request/Response)
+│   ├── GsonFactory.java
+│   └── InstantTypeAdapter.java
+├── model/                      # Domain entities & Enums
 │   ├── Board.java
 │   ├── Task.java
-│   ├── Priority.java            # Enum: LOW, MEDIUM, HIGH
-│   └── Status.java              # Enum: TODO, INPROGRESS, DONE
-└── server/
-    ├── Server.java              # Main server entry point
-    ├── ClientHandler.java       # Per-client TCP handler (threaded)
-    ├── DatabaseManager.java     # Business logic layer
-    └── Storage.java             # JSON persistence layer
+│   ├── User.java
+│   ├── Priority.java
+│   └── Status.java
+└── server/                     # Multi-threaded backend core
+├── command/ (Command Pattern implementations)
+├── repository/ (BoardRepository, UserRepository)
+├── service/ (AuthService, BoardAccessService, NotificationService)
+├── ClientHandler.java
+├── ClientSession.java
+├── CommandRegistryFactory.java
+├── Server.java
+└── Storage.java
 ```
 
 ---
@@ -72,47 +79,28 @@ mvn clean package
 
 **1. Start the server:**
 ```bash
-java -cp target/TodoApp1-1.0-SNAPSHOT.jar server.Server
+java -cp target/TodoApp-1.0-SNAPSHOT.jar server.Server
 ```
 
 **2. Start the client** (in a new terminal):
 ```bash
-java -cp target/TodoApp1-1.0-SNAPSHOT.jar client.Client
+java -cp target/TodoApp-1.0-SNAPSHOT.jar client.Client
 ```
 
 > ⚠️ Always start the **server before the client**.
 
 ---
 
-## 💻 Available Commands
-
-| Command | Description |
-|---------|-------------|
-| `register\|username\|password` | Register a new user |
-| `login\|username\|password` | Login to your account |
-| `logout` | Logout from current session |
-| `create_board\|name` | Create a new board |
-| `list_boards` | List all accessible boards |
-| `view_board\|boardId` | View board details |
-| `add_user_to_board\|boardId\|userId` | Add a user to a board |
-| `add_task\|boardId\|title\|description\|priority` | Add a task (`LOW` / `MEDIUM` / `HIGH`) |
-| `list_tasks\|boardId` | List all tasks in a board |
-| `update_task_status\|taskId\|status` | Update status (`TODO` / `INPROGRESS` / `DONE`) |
-| `delete_task\|taskId` | Delete a task |
-
----
-
-## 🧪 Example Session
+## 🧪 Quick Test Scenario
 
 ```
-register|alice|secret123
-login|alice|secret123
-create_board|MyProject
+register alice secret123
+login alice secret123
+create_board "Backend Refactoring"
 list_boards
-add_task|1|Fix login bug|Critical issue in auth flow|HIGH
-list_tasks|1
-update_task_status|1|INPROGRESS
-delete_task|1
+add_task 1 "Fix Auth Leak" "Mitigate timing side-channels" HIGH
+list_tasks 1
+update_task_status 1 INPROGRESS
 logout
 ```
 

@@ -1,19 +1,5 @@
-# ===== Maven =====
 target/
-*.jar
-*.war
+storage.json
 *.class
-
-# ===== IDE - IntelliJ =====
 .idea/
 *.iml
-*.iws
-*.ipr
-out/
-
-# ===== Storage (runtime generated) =====
-storage.json
-
-# ===== OS =====
-.DS_Store
-Thumbs.db

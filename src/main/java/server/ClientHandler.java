@@ -1,187 +1,95 @@
 package server;
 
-import model.Priority;
-import model.Status;
-import model.Board;
-import model.Task;
-import model.User;
+import com.google.gson.Gson;
+import com.google.gson.JsonSyntaxException;
+import common.GsonFactory;
+import common.exception.AuthRequiredException;
+import common.exception.ProtocolException;
+import common.protocol.Request;
+import common.protocol.Response;
+import server.command.Command;
+import server.command.CommandRegistry;
 
-import java.io.*;
-import java.net.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
+/**
+ * Every request now goes through a single try/catch that always produces a Response,
+ * instead of letting ArrayIndexOutOfBoundsException / NumberFormatException /
+ * IllegalArgumentException propagate out of run() and silently kill the thread
+ * (which is what happened before on any malformed input).
+ */
 public class ClientHandler implements Runnable {
-    private Socket clientSocket;
-    private DatabaseManager dbManager;
-    private long userId = -1;
+    private static final Logger LOGGER = Logger.getLogger(ClientHandler.class.getName());
+    private static final Gson GSON = GsonFactory.forNetwork();
 
-    public ClientHandler(Socket socket, DatabaseManager db) {
-        this.clientSocket = socket;
-        this.dbManager = db;
+    // Without this, a client that opens a connection and never sends anything blocks its
+    // handler thread on in.readLine() forever. With a fixed-size pool (10 threads), just
+    // 10 such idle connections exhaust the server's entire capacity for real clients.
+    private static final int IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+    private final Socket clientSocket;
+    private final CommandRegistry registry;
+
+    public ClientHandler(Socket clientSocket, CommandRegistry registry) {
+        this.clientSocket = clientSocket;
+        this.registry = registry;
     }
 
     @Override
     public void run() {
+        ClientSession session = new ClientSession(clientSocket.getInetAddress());
+        try {
+            clientSocket.setSoTimeout(IDLE_TIMEOUT_MS);
+        } catch (SocketException e) {
+            LOGGER.log(Level.WARNING, "Could not set idle timeout on client socket", e);
+        }
+
         try (BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
              PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)) {
 
             String line;
             while ((line = in.readLine()) != null) {
-                String response = handleRequest(line);
-                out.println(response);
-                if (line.contains("update_task_status") || line.contains("add_task")) {
-                    sendUdpPush("Update received!");
-                }
+                out.println(GSON.toJson(process(line, session)));
             }
+        } catch (SocketTimeoutException e) {
+            LOGGER.log(Level.INFO, "Closing idle connection (no activity for {0} ms)", IDLE_TIMEOUT_MS);
         } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private String handleRequest(String request) {
-        String[] parts = request.split("\\|");
-        String command = parts[0];
-        switch (command) {
-            case "register":
-                String username = parts[1];
-                String password = parts[2];
-                User user = dbManager.register(username, password);
-                return user != null ? "success|User registered" : "error|Username already exists";
-
-            case "login":
-                username = parts[1];
-                password = parts[2];
-                user = dbManager.login(username, password);
-                if (user != null) {
-                    userId = user.getId();
-                    return "success|Logged in successfully";
-                }
-                return "error|Invalid username or password";
-
-            case "logout":
-                userId = -1;
-                return "success|Logged out";
-            case "create_board":
-                if (userId == -1) return "error|You must be logged in";
-                String boardName = parts[1];
-                Board board = dbManager.createBoard(boardName, userId);
-                return board != null ? "success|Board created successfully" : "error|Invalid request";
-
-                case "list_boards":
-                if (userId == -1) return "error|You must be logged in";
-                StringBuilder boardsList = new StringBuilder();
-                for (Board b : dbManager.listBoards(userId)) {
-                    boardsList.append(b.getId()).append(",").append(b.getName()).append(";");
-                }
-                return "success|" + (boardsList.length() > 0 ? boardsList.substring(0, boardsList.length() - 1) : "");
-
-            case "add_user_to_board":
-                long boardId = Long.parseLong(parts[1]);
-                long userIdToAdd = Long.parseLong(parts[2]);
-                Board board1 = dbManager.viewBoard(boardId);
-                if (board1 == null) {
-                    return "error|Board not found";
-                }
-                if (checkBoardAccess(board1)) {
-                    boolean added = dbManager.addUserToBoard(boardId, userIdToAdd);
-                    if (added) {
-                        return "success|User added to board successfully";
-                    } else {
-                        return "error|User already added or invalid request";
-                    }
-                }
-                return "error|access is needed";
-            case "view_board":
-                boardId = Long.parseLong(parts[1]);
-                board = dbManager.viewBoard(boardId);
-                if (board != null && checkBoardAccess(board)) {
-                    return "success|Board: " + board.getName();
-                }
-                return "error|access is needed";
-            case "add_task":
-                if (userId == -1) return "error|You must be logged in";
-                boardId = Long.parseLong(parts[1]);
-                String title = parts[2];
-                String description = parts[3];
-                Priority priority = Priority.valueOf(parts[4]);
-                board = dbManager.viewBoard(boardId);
-                if (board == null) {
-                    return "error|Board not found";
-                }
-                if (checkBoardAccess(board)) {
-                    Task task = dbManager.addTask(boardId, title, description, priority);
-                    if (task != null) {
-                        return "success|Task added successfully";
-                    } else {
-                        return "error|Task not found";
-                    }
-                }
-                return "error|access is needed";
-            case "list_tasks":
-                if (userId == -1) return "error|You must be logged in";
-                boardId = Long.parseLong(parts[1]);
-                StringBuilder tasksList = new StringBuilder();
-                for (Task t : dbManager.listTasks(boardId)) {
-                    tasksList.append(t.getId()).append(",").append(t.getTitle()).append(";");
-                }
-                return "success|" + (tasksList.length() > 0 ? tasksList.substring(0, tasksList.length() - 1) : "");
-            case "update_task_status":
-                long taskId = Long.parseLong(parts[1]);
-                Status newStatus = Status.valueOf(parts[2]);
-                board = findBoardByTask(taskId);
-                if (board == null) {
-                    return "error|Board not found";
-                }
-                if (checkBoardAccess(board)) {
-                    boolean updated = dbManager.updateTaskStatus(taskId, newStatus);
-                    if (updated) {
-                        return "success|Task status updated successfully";
-                    } else {
-                        return "error|Task not found";
-                    }
-                }
-                return "error|access is needed";
-            case "delete_task":
-                taskId = Long.parseLong(parts[1]);
-                board = findBoardByTask(taskId);
-                if (board == null) {
-                    return "error|Task not found";
-                }
-                if (checkBoardAccess(board)) {
-                    boolean deleted = dbManager.deleteTask(taskId);
-                    if (deleted) {
-                        return "success|Task deleted successfully";
-                    } else {
-                        return "error|Task not found";
-                    }
-                }
-                return "error|access is needed";
-            default:
-                return "error|Unknown command";
-        }
-    }
-
-    private boolean checkBoardAccess(Board board) {
-        return userId != -1 && (board.getOwnerId() == userId || board.getMemberIds().contains(userId));
-    }
-
-    private Board findBoardByTask(long taskId) {
-        for (Board b : dbManager.listBoards(userId)) {
-            for (Task t : b.getTasks()) {
-                if (t.getId() == taskId) {
-                    return b;
-                }
+            LOGGER.log(Level.INFO, "Connection closed: {0}", e.getMessage());
+        } finally {
+            try {
+                clientSocket.close();
+            } catch (IOException ignored) {
+                // already closing; nothing actionable
             }
         }
-        return null;
     }
 
-    private void sendUdpPush(String message) {
-        try (DatagramSocket udpSocket = new DatagramSocket()) {
-            byte[] data = message.getBytes();
-            DatagramPacket packet = new DatagramPacket(data, data.length, InetAddress.getByName("localhost"), 12345);
-            udpSocket.send(packet);
-        } catch (IOException e) {
-            e.printStackTrace();
+    private Response process(String line, ClientSession session) {
+        try {
+            Request request = GSON.fromJson(line, Request.class);
+            if (request == null || request.getCommand() == null) {
+                return Response.error("Invalid request");
+            }
+            Command command = registry.find(request.getCommand());
+            if (command == null) {
+                return Response.error("Unknown command");
+            }
+            return command.execute(request, session);
+        } catch (JsonSyntaxException e) {
+            return Response.error("Malformed request, expected JSON");
+        } catch (AuthRequiredException | ProtocolException e) {
+            return Response.error(e.getMessage());
+        } catch (RuntimeException e) {
+            LOGGER.log(Level.SEVERE, "Unexpected error handling request: " + line, e);
+            return Response.error("Internal server error");
         }
     }
 }
